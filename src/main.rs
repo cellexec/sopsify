@@ -1,7 +1,9 @@
 use anyhow::Context;
 use clap::Parser;
 use regex::Regex;
+use std::process::Command;
 use std::{collections::HashMap, fs, io::Write, path::PathBuf};
+use tempfile::NamedTempFile;
 use walkdir::WalkDir;
 
 // CLI arguments
@@ -15,7 +17,7 @@ Designed for GitOps workflows using SOPS + Flux."
 )]
 struct Args {
     #[arg(short, long, help = "Path to the GPG key (e.g. gpg.asc)")]
-    gpg_key: PathBuf,
+    gpg_key: String,
 
     #[arg(short, long, help = "Path to the secrets file (YAML format)")]
     secrets_file: PathBuf,
@@ -44,7 +46,7 @@ fn main() -> anyhow::Result<()> {
         .output_dir
         .unwrap_or_else(|| args.templates_dir.clone());
 
-    process_templates(&args.templates_dir, &output_dir, &secrets)?;
+    process_templates(&args.templates_dir, &output_dir, &secrets, &args.gpg_key)?;
 
     Ok(())
 }
@@ -63,6 +65,7 @@ fn process_templates(
     templates_dir: &PathBuf,
     output_dir: &PathBuf,
     secrets: &HashMap<String, String>,
+    gpg_key: &String,
 ) -> anyhow::Result<()> {
     let placeholder_regex = Regex::new(r"\$\{(\w+)\}")?;
 
@@ -87,24 +90,76 @@ fn process_templates(
             })
         });
 
+        // Write replaced content to temp file
+        let mut temp_file =
+            NamedTempFile::new().context("Failed to create temporary file for encryption")?;
+        write!(temp_file, "{}", replaced)?;
+
         // Determine output path
         let relative_path = path.strip_prefix(templates_dir)?;
         let output_path = output_dir.join(relative_path);
-        fs::create_dir_all(output_path.parent().unwrap())?;
 
         if let Some(parent) = output_path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("Failed to create directories for {:?}", output_path))?;
         }
 
-        let mut file = fs::File::create(&output_path)
-            .with_context(|| format!("Failed to create output file {:?}", output_path))?;
+        let status = Command::new("sops")
+            .arg("--encrypt")
+            .arg("--output-type")
+            .arg("yaml")
+            .arg("--pgp")
+            .arg(gpg_key)
+            .arg(temp_file.path())
+            .output()
+            .context("Failed to execute sops command")?;
 
-        file.write_all(replaced.as_bytes())
-            .with_context(|| format!("Failed to write to output file {:?}", output_path))?;
+        if !status.status.success() {
+            return Err(anyhow::anyhow!(
+                "SOPS encryption failed:\n{}",
+                String::from_utf8_lossy(&status.stderr)
+            ));
+        }
 
-        println!("✅ Processed template: {:?}", output_path);
+        let encrypted_output_path = output_path;
+        fs::write(&encrypted_output_path, &status.stdout).with_context(|| {
+            format!("Failed to write encrypted file {:?}", encrypted_output_path)
+        })?;
+
+        println!("🔐 Encrypted and saved: {:?}", encrypted_output_path);
     }
 
     Ok(())
+}
+
+use serde_yaml::Value;
+
+fn replace_placeholders_in_value(
+    value: &mut Value,
+    secrets: &HashMap<String, String>,
+    placeholder_regex: &Regex,
+) {
+    match value {
+        Value::String(s) => {
+            let replaced = placeholder_regex.replace_all(s, |caps: &regex::Captures| {
+                let key = &caps[1];
+                secrets
+                    .get(key)
+                    .cloned()
+                    .unwrap_or_else(|| caps[0].to_string())
+            });
+            *s = replaced.into_owned();
+        }
+        Value::Mapping(map) => {
+            for (_, v) in map.iter_mut() {
+                replace_placeholders_in_value(v, secrets, placeholder_regex);
+            }
+        }
+        Value::Sequence(seq) => {
+            for v in seq.iter_mut() {
+                replace_placeholders_in_value(v, secrets, placeholder_regex);
+            }
+        }
+        _ => {} // no placeholders in other types
+    }
 }
