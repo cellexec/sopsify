@@ -1,5 +1,6 @@
+use anyhow::Context;
 use clap::Parser;
-use std::path::PathBuf;
+use std::{collections::HashMap, fs, path::PathBuf};
 
 // CLI arguments
 #[derive(Parser, Debug)]
@@ -28,10 +29,25 @@ fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     let args = Args::parse();
-    println!("🔐 Using GPG key: {:?}", args.gpg_key);
-    println!("👀 Loading secrets from: {:?}", args.secrets_file);
-    println!("📂 Scanning templates in: {:?}", args.templates_dir);
+    println!("⚙️ Passed Arguments");
+    println!("   > GPG file: {:?}", args.gpg_key);
+    println!("   > Secrets file: {:?}", args.secrets_file);
+    println!("   > Templates directory: {:?}", args.templates_dir);
+    println!("");
+
+    let secrets = load_secrets(&args.secrets_file)?;
+    println!("✅ Loaded secrets: {:#?}", secrets.keys());
 
     // for now return OK
     Ok(())
+}
+
+fn load_secrets(path: &PathBuf) -> anyhow::Result<HashMap<String, String>> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read secrets file at {:?}", path))?;
+
+    let secrets: HashMap<String, String> = serde_yaml::from_str(&contents)
+        .with_context(|| format!("Failed to parse YAML in secrets file at {:?}", path))?;
+
+    Ok(secrets)
 }
