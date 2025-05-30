@@ -6,20 +6,16 @@ use std::path::PathBuf;
 #[command(name = "sopsify")]
 #[command(about = "Replace placeholders in YAML files and encrypt them with GPG", long_about = None)]
 struct Args {
-    // Path to the GPG key (e.g. gpg.asc)
-    #[arg(short, long)]
+    #[arg(short, long, help = "Path to the GPG key (e.g. gpg.asc)")]
     gpg_key: PathBuf,
 
-    // Path to the secrets file (YAML format)
-    #[arg(short, long)]
+    #[arg(short, long, help = "Path to the secrets file (YAML format)")]
     secrets_file: PathBuf,
 
-    // Folder containing secret templates
-    #[arg(short, long)]
+    #[arg(short, long, help = "Folder containing secret templates")]
     templates_dir: PathBuf,
 
-    // Output directory (where to write encrypted files)
-    #[arg(short, long)]
+    #[arg(short, long, help = "Output directory (to write encrypted files)")]
     output_dir: Option<PathBuf>,
 }
 
