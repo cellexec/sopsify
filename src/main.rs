@@ -1,5 +1,4 @@
 use anyhow::Context;
-use base64::engine::{Engine as _, general_purpose};
 use clap::Parser;
 use log::{error, info};
 use regex::Regex;
@@ -57,29 +56,18 @@ fn main() -> anyhow::Result<()> {
     info!("    > Secrets file: {:?}", args.secrets_file);
     info!("    > Templates directory: {:?}", args.templates_dir);
 
-    let sops_config_file = PathBuf::from(".sops.yaml");
-    if !sops_config_file.exists() {
-        error!(
-            "Error: '.sops.yaml' not found in the current directory. Please run this program from the root of your GitOps repository."
-        );
-        return Err(anyhow::anyhow!(
-            "Error: '.sops.yaml' not found in the current directory. Please run this program from the root of your GitOps repository."
-        ));
+    if !PathBuf::from(".sops.yaml").exists() {
+        return Err(anyhow::anyhow!(".sops.yaml not found in current directory"));
     }
-    info!("✅ Found .sops.yaml in current directory.");
 
     if !args.secrets_file.exists() {
-        error!("Secrets file {:?} does not exist.", args.secrets_file);
         return Err(anyhow::anyhow!(
             "Secrets file {:?} does not exist.",
             args.secrets_file
         ));
     }
+
     if !args.templates_dir.exists() {
-        error!(
-            "Templates directory {:?} does not exist.",
-            args.templates_dir
-        );
         return Err(anyhow::anyhow!(
             "Templates directory {:?} does not exist.",
             args.templates_dir
@@ -93,7 +81,6 @@ fn main() -> anyhow::Result<()> {
         .output_dir
         .clone()
         .unwrap_or_else(|| args.templates_dir.clone());
-
     process_templates(&args.templates_dir, &output_dir, &secrets, &args.gpg_key)?;
 
     Ok(())
@@ -121,17 +108,14 @@ fn process_templates(
         .into_iter()
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file())
-        // Optional: Filter only YAML files
         .filter(|e| {
-            if let Some(ext) = e.path().extension() {
-                ext == "yaml" || ext == "yml"
-            } else {
-                false
-            }
+            e.path()
+                .extension()
+                .map_or(false, |ext| ext == "yaml" || ext == "yml")
         })
     {
         let path = entry.path();
-        info!("Processing template: {:?}", path);
+        info!("📄 Processing template: {:?}", path);
 
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read template file {:?}", path))?;
@@ -139,13 +123,15 @@ fn process_templates(
         let mut yaml_value: Value = serde_yaml::from_str(&content)
             .with_context(|| format!("Failed to parse YAML in {:?}", path))?;
 
-        replace_placeholders_in_value(&mut yaml_value, secrets, &placeholder_regex, None);
+        replace_placeholders_in_value(&mut yaml_value, secrets, &placeholder_regex);
 
         let replaced_yaml_string =
             serde_yaml::to_string(&yaml_value).context("Failed to serialize replaced YAML")?;
 
         let relative_path = path.strip_prefix(templates_dir)?;
-        let output_path = output_dir.join(relative_path);
+        let mut new_file_name = relative_path.file_stem().unwrap_or_default().to_os_string();
+        new_file_name.push(".enc.yaml");
+        let output_path = output_dir.join(relative_path.with_file_name(new_file_name));
 
         if let Some(parent) = output_path.parent() {
             fs::create_dir_all(parent)
@@ -153,9 +139,8 @@ fn process_templates(
         }
 
         fs::write(&output_path, replaced_yaml_string)
-            .with_context(|| format!("Failed to write pre-encryption YAML to {:?}", output_path))?;
+            .with_context(|| format!("Failed to write replaced YAML to {:?}", output_path))?;
 
-        // Encrypt with sops
         let status = Command::new("sops")
             .arg("--encrypt")
             .arg("--in-place")
@@ -184,49 +169,29 @@ fn process_templates(
     Ok(())
 }
 
-/// Recursively replace placeholders in the YAML `Value`.
-///
-/// Only base64-encodes secret values if they appear under `data:` or `stringData:` keys,
-/// otherwise inserts the plaintext secret value.
-///
-/// `parent_key` tracks the key name in the parent mapping for context.
 fn replace_placeholders_in_value(
     value: &mut Value,
     secrets: &HashMap<String, String>,
     placeholder_regex: &Regex,
-    parent_key: Option<&str>,
 ) {
     match value {
         Value::String(s) => {
             let replaced = placeholder_regex.replace_all(s, |caps: &regex::Captures| {
-                let key = &caps[1];
-                if let Some(secret_value) = secrets.get(key) {
-                    // Base64 encode only inside `data` or `stringData` fields
-                    if matches!(parent_key, Some("data") | Some("stringData")) {
-                        general_purpose::STANDARD.encode(secret_value)
-                    } else {
-                        secret_value.clone()
-                    }
-                } else {
-                    // If no secret found, keep original placeholder
-                    caps[0].to_string()
-                }
+                secrets
+                    .get(&caps[1])
+                    .cloned()
+                    .unwrap_or_else(|| caps[0].to_string())
             });
             *s = replaced.into_owned();
         }
         Value::Mapping(map) => {
-            for (k, v) in map.iter_mut() {
-                let next_parent_key = if let Value::String(key_str) = k {
-                    Some(key_str.as_str())
-                } else {
-                    None
-                };
-                replace_placeholders_in_value(v, secrets, placeholder_regex, next_parent_key);
+            for (_, v) in map.iter_mut() {
+                replace_placeholders_in_value(v, secrets, placeholder_regex);
             }
         }
         Value::Sequence(seq) => {
             for v in seq.iter_mut() {
-                replace_placeholders_in_value(v, secrets, placeholder_regex, None);
+                replace_placeholders_in_value(v, secrets, placeholder_regex);
             }
         }
         _ => {}
