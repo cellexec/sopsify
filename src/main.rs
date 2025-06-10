@@ -1,6 +1,6 @@
 use clap::{Arg, Command};
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -10,20 +10,15 @@ use std::{
 
 #[derive(Debug, Deserialize)]
 struct ScopedSecret {
-    #[serde(default)]
-    namespaces: Vec<String>, // MUST be present for every secret entry
-
+    namespaces: Vec<String>,
     value: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct SopsifyConfig(HashMap<String, Vec<ScopedSecret>>);
-
-type SopsifyConfigMap = HashMap<String, Vec<ScopedSecret>>;
+type SopsifyConfig = HashMap<String, Vec<ScopedSecret>>;
 
 fn main() {
     let matches = Command::new("sopsify")
-        .version("1.0.2")
+        .version("1.0.3")
         .about("Encrypts template files using sops with placeholders from .sopsify.yaml")
         .arg(
             Arg::new("file")
@@ -64,28 +59,13 @@ fn main() {
         .unwrap_or_else(|| PathBuf::from("output"));
 
     let config_content = fs::read_to_string(".sopsify.yaml").expect("Failed to read .sopsify.yaml");
-
-    // Deserialize enforcing every secret value must be an array of scoped secrets
-    let config: SopsifyConfigMap = match serde_yaml::from_str(&config_content) {
+    let config: SopsifyConfig = match serde_yaml::from_str(&config_content) {
         Ok(cfg) => cfg,
         Err(e) => {
-            eprintln!("❌ Failed to parse .sopsify.yaml:\n{e}");
+            eprintln!("\u{274c} Failed to parse .sopsify.yaml:\n{e}");
             std::process::exit(1);
         }
     };
-
-    // Validate no empty namespaces and all namespaces present
-    for (key, scoped_list) in &config {
-        for entry in scoped_list {
-            if entry.namespaces.is_empty() {
-                eprintln!(
-                    "❌ Secret '{}' has an entry with empty 'namespaces' list — all secrets must define namespaces explicitly",
-                    key
-                );
-                std::process::exit(1);
-            }
-        }
-    }
 
     let namespaces = collect_all_namespaces(&config);
 
@@ -97,68 +77,33 @@ fn main() {
                 .unwrap_or_else(|_| panic!("Failed to read template: {}", template_path.display()));
 
             let rendered = render_template(&content, &vars);
-
             let missing_vars = find_missing_placeholders(&rendered);
             let provided_vars: HashSet<_> = vars.keys().cloned().collect();
-
-            // partial missing vars logic — only error if some placeholders partially defined
-            let present_vars: Vec<_> = missing_vars
+            let unresolved: Vec<_> = missing_vars
                 .iter()
-                .filter(|var| provided_vars.contains(*var))
+                .filter(|var| !provided_vars.contains(*var))
                 .cloned()
                 .collect();
 
-            let truly_missing: Vec<_> = missing_vars
-                .into_iter()
-                .filter(|var| !provided_vars.contains(var))
-                .collect();
-
-            if !present_vars.is_empty() && !truly_missing.is_empty() {
-                eprintln!(
-                    "❌ Some placeholders in file '{}' are partially defined for namespace '{}'. Missing: {:?}",
-                    template_path.display(),
-                    namespace,
-                    truly_missing
-                );
-                std::process::exit(1);
+            if !unresolved.is_empty() {
+                // Skip this file for this namespace
+                continue;
             }
 
-            // Parse YAML rendered content so we can inject or override namespace key
-            let mut yaml_value: serde_yaml::Value = match serde_yaml::from_str(&rendered) {
-                Ok(v) => v,
-                Err(e) => {
+            // Inject namespace into rendered content if key 'namespace' exists
+            let mut final_rendered = rendered.clone();
+            if rendered.contains("${namespace}") {
+                final_rendered = final_rendered.replace("${namespace}", namespace);
+            } else if content.contains("namespace:") {
+                let replaced = Regex::new(r"namespace:\s*\S+").unwrap();
+                if replaced.is_match(&final_rendered) {
                     eprintln!(
-                        "❌ Failed to parse rendered YAML for '{}': {}",
-                        template_path.display(),
-                        e
+                        "\u{26a0}\u{fe0f} Warning: 'namespace' was defined in template and will be overridden for {}",
+                        template_path.display()
                     );
-                    std::process::exit(1);
+                    final_rendered = replaced.replace_all(&final_rendered, format!("namespace: {}", namespace)).to_string();
                 }
-            };
-
-            // Inject or override `namespace` key at root level
-            if let serde_yaml::Value::Mapping(map) = &mut yaml_value {
-                if let Some(existing_ns) = map.get(&serde_yaml::Value::String("namespace".into())) {
-                    eprintln!(
-                        "⚠️ Warning: overriding existing 'namespace' key in file '{}' for namespace '{}'",
-                        template_path.display(),
-                        namespace
-                    );
-                }
-                map.insert(
-                    serde_yaml::Value::String("namespace".into()),
-                    serde_yaml::Value::String(namespace.clone()),
-                );
-            } else {
-                eprintln!(
-                    "❌ Expected YAML root to be a mapping/object in file '{}'",
-                    template_path.display()
-                );
-                std::process::exit(1);
             }
-
-            let new_rendered =
-                serde_yaml::to_string(&yaml_value).expect("Failed to serialize YAML");
 
             let filename = template_path
                 .file_stem()
@@ -171,7 +116,7 @@ fn main() {
             let output_path = output_dir.join(format!("{}.enc.yaml", filename));
             let tmp_path = output_dir.join(format!("{}.tmp.yaml", filename));
 
-            fs::write(&tmp_path, &new_rendered).expect("Failed to write temporary file");
+            fs::write(&tmp_path, &final_rendered).expect("Failed to write temporary file");
 
             let status = ProcessCommand::new("sops")
                 .arg("--encrypt")
@@ -191,7 +136,7 @@ fn main() {
             }
 
             fs::remove_file(&tmp_path).ok();
-            println!("✅ Encrypted: {}", output_path.display());
+            println!("\u{2705} Encrypted: {}", output_path.display());
         }
     }
 }
@@ -204,43 +149,39 @@ fn read_template_files(matches: &clap::ArgMatches) -> Result<Vec<PathBuf>, Strin
         if path.is_file() {
             files.push(path);
         } else {
-            return Err("❌ --file path is not a valid file.".into());
+            return Err("\u{274c} --file path is not a valid file.".into());
         }
     } else if let Some(folder) = matches.get_one::<String>("templates") {
         let dir = PathBuf::from(folder);
         if dir.is_dir() {
-            for entry in fs::read_dir(dir).map_err(|_| "❌ Failed to read directory")? {
-                let path = entry.map_err(|_| "❌ Failed to read entry")?.path();
+            for entry in fs::read_dir(dir).map_err(|_| "\u{274c} Failed to read directory")? {
+                let path = entry.map_err(|_| "\u{274c} Failed to read entry")?.path();
                 if path.is_file() {
                     files.push(path);
                 }
             }
         } else {
-            return Err("❌ --templates path is not a valid directory.".into());
+            return Err("\u{274c} --templates path is not a valid directory.".into());
         }
-    } else {
-        return Err("❌ Either --file or --templates must be specified.".into());
     }
 
     Ok(files)
 }
 
-fn collect_all_namespaces(config: &SopsifyConfigMap) -> HashSet<String> {
+fn collect_all_namespaces(config: &SopsifyConfig) -> HashSet<String> {
     let mut namespaces = HashSet::new();
-
-    for scoped_list in config.values() {
-        for entry in scoped_list {
-            namespaces.extend(entry.namespaces.iter().cloned());
+    for entries in config.values() {
+        for entry in entries {
+            namespaces.extend(entry.namespaces.clone());
         }
     }
-
     namespaces
 }
 
-fn extract_namespace_vars(config: &SopsifyConfigMap, namespace: &str) -> HashMap<String, String> {
+fn extract_namespace_vars(config: &SopsifyConfig, namespace: &str) -> HashMap<String, String> {
     let mut vars = HashMap::new();
-    for (key, scoped_list) in config {
-        for entry in scoped_list {
+    for (key, entries) in config {
+        for entry in entries {
             if entry.namespaces.contains(&namespace.to_string()) {
                 vars.insert(key.clone(), entry.value.clone());
             }
@@ -250,7 +191,7 @@ fn extract_namespace_vars(config: &SopsifyConfigMap, namespace: &str) -> HashMap
 }
 
 fn render_template(template: &str, vars: &HashMap<String, String>) -> String {
-    let re = Regex::new(r"\$\{(\w+)\}").unwrap();
+    let re = Regex::new(r"\$\{(\w+)}").unwrap();
     re.replace_all(template, |caps: &regex::Captures| {
         let key = &caps[1];
         vars.get(key)
@@ -261,10 +202,11 @@ fn render_template(template: &str, vars: &HashMap<String, String>) -> String {
 }
 
 fn find_missing_placeholders(rendered: &str) -> Vec<String> {
-    let re = Regex::new(r"\$\{(\w+)\}").unwrap();
+    let re = Regex::new(r"\$\{(\w+)}").unwrap();
     let mut missing = HashSet::new();
     for caps in re.captures_iter(rendered) {
         missing.insert(caps[1].to_string());
     }
     missing.into_iter().collect()
 }
+
