@@ -32,7 +32,7 @@ type SopsifyConfig = HashMap<String, SecretValue>;
 
 fn main() {
     let matches = Command::new("sopsify")
-        .version("1.0.0")
+        .version("1.0.1")
         .about("Encrypts template files using sops with placeholders from .sopsify.yaml")
         .arg(
             Arg::new("file")
