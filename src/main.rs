@@ -1,15 +1,34 @@
 use clap::{Arg, Command};
 use regex::Regex;
 use serde::Deserialize;
+use serde_yaml::Value;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
 };
 
 #[derive(Debug, Deserialize)]
-struct SopsifyConfig(HashMap<String, String>);
+#[serde(untagged)]
+enum SecretValue {
+    Single(String),
+    Multiple(Vec<ScopedSecret>),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct ScopedSecret {
+    #[serde(default)]
+    namespace: Option<String>,
+
+    #[serde(default)]
+    namespaces: Option<Vec<String>>,
+
+    value: String,
+}
+
+type SopsifyConfig = HashMap<String, SecretValue>;
 
 fn main() {
     let matches = Command::new("sopsify")
@@ -42,7 +61,7 @@ fn main() {
 
     let mut template_files = Vec::new();
 
-    // Handle input sources
+    // Read templates
     if let Some(file) = matches.get_one::<String>("file") {
         let path = PathBuf::from(file);
         if path.is_file() {
@@ -70,55 +89,120 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Handle output directory
-    let output_dir = matches.get_one::<String>("output").map(PathBuf::from);
+    let output_root = matches
+        .get_one::<String>("output")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("output"));
 
-    // Load .sopsify.yaml config
-    let config_contents =
-        fs::read_to_string(".sopsify.yaml").expect("Failed to read .sopsify.yaml");
+    // Load config
+    let config_content = fs::read_to_string(".sopsify.yaml").expect("Failed to read .sopsify.yaml");
     let config: SopsifyConfig =
-        serde_yaml::from_str(&config_contents).expect("Invalid .sopsify.yaml format");
+        serde_yaml::from_str(&config_content).expect("Invalid .sopsify.yaml format");
 
-    for template_path in template_files {
-        let content = fs::read_to_string(&template_path)
-            .unwrap_or_else(|_| panic!("Failed to read template: {}", template_path.display()));
-        let rendered = render_template(&content, &config.0);
+    let namespaces = collect_all_namespaces(&config);
 
-        let filename = template_path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or("output");
+    for namespace in &namespaces {
+        let vars = extract_namespace_vars(&config, namespace);
 
-        let output_filename = format!("{}.enc.yaml", filename);
-        let output_path = output_dir
-            .as_ref()
-            .map(|dir| dir.join(&output_filename))
-            .unwrap_or_else(|| Path::new(&output_filename).to_path_buf());
+        for template_path in &template_files {
+            let content = fs::read_to_string(template_path)
+                .unwrap_or_else(|_| panic!("Failed to read template: {}", template_path.display()));
 
-        // Write to temporary file
-        let tmp_path = output_path.with_extension("tmp.yaml");
-        fs::write(&tmp_path, &rendered).expect("Failed to write temporary file");
+            let rendered = render_template(&content, &vars);
 
-        // Encrypt with sops
-        let status = ProcessCommand::new("sops")
-            .arg("--encrypt")
-            .arg("--output")
-            .arg(&output_path)
-            .arg(&tmp_path)
-            .status()
-            .expect("Failed to run sops");
+            let filename = template_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("output");
 
-        if !status.success() {
-            eprintln!(
-                "sops encryption failed for file: {}",
-                template_path.display()
-            );
-            std::process::exit(1);
+            let output_dir = output_root.join(namespace);
+            fs::create_dir_all(&output_dir).expect("Failed to create output namespace directory");
+
+            let output_path = output_dir.join(format!("{}.enc.yaml", filename));
+            let tmp_path = output_dir.join(format!("{}.tmp.yaml", filename));
+
+            fs::write(&tmp_path, &rendered).expect("Failed to write temporary file");
+
+            let status = ProcessCommand::new("sops")
+                .arg("--encrypt")
+                .arg("--output")
+                .arg(&output_path)
+                .arg(&tmp_path)
+                .status()
+                .expect("Failed to run sops");
+
+            if !status.success() {
+                eprintln!(
+                    "sops encryption failed for file: {} in namespace: {}",
+                    template_path.display(),
+                    namespace
+                );
+                std::process::exit(1);
+            }
+
+            fs::remove_file(&tmp_path).ok();
+            println!("Encrypted: {}", output_path.display());
         }
-
-        fs::remove_file(&tmp_path).ok(); // Clean up
-        println!("Encrypted: {}", output_path.display());
     }
+}
+
+fn collect_all_namespaces(config: &SopsifyConfig) -> HashSet<String> {
+    let mut namespaces = HashSet::new();
+
+    for value in config.values() {
+        match value {
+            SecretValue::Single(_) => {
+                namespaces.insert("default".to_string());
+            }
+            SecretValue::Multiple(list) => {
+                for entry in list {
+                    if let Some(ns) = &entry.namespace {
+                        namespaces.insert(ns.clone());
+                    }
+                    if let Some(nss) = &entry.namespaces {
+                        for ns in nss {
+                            namespaces.insert(ns.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    namespaces
+}
+
+fn extract_namespace_vars(config: &SopsifyConfig, namespace: &str) -> HashMap<String, String> {
+    let mut vars = HashMap::new();
+    for (key, value) in config {
+        match value {
+            SecretValue::Single(val) => {
+                vars.insert(key.clone(), val.clone());
+            }
+            SecretValue::Multiple(entries) => {
+                for entry in entries {
+                    let mut applies = false;
+
+                    if let Some(ns) = &entry.namespace {
+                        if ns == namespace {
+                            applies = true;
+                        }
+                    }
+
+                    if let Some(nss) = &entry.namespaces {
+                        if nss.contains(&namespace.to_string()) {
+                            applies = true;
+                        }
+                    }
+
+                    if applies {
+                        vars.insert(key.clone(), entry.value.clone());
+                    }
+                }
+            }
+        }
+    }
+    vars
 }
 
 fn render_template(template: &str, vars: &HashMap<String, String>) -> String {
