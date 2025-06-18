@@ -1,0 +1,16 @@
+{
+  "name": "sopsify-js",
+  "version": "1.0.0",
+  "description": "Encrypts template files using sops with placeholders from .sopsify.yaml",
+  "main": "lib/sopsify.js",
+  "bin": {
+    "sopsify": "bin/sopsify.js"
+  },
+  "type": "module",
+  "dependencies": {
+    "child_process": "^1.0.2",
+    "commander": "^11.0.0",
+    "glob": "^10.3.1",
+    "js-yaml": "^4.1.0"
+  },
+}

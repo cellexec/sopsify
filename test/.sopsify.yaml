@@ -1,0 +1,36 @@
+sopsify:
+
+  # Production
+  - production:
+    - template: "data-secret.yaml"
+      values:
+        - key: gitlab-registry
+          value: prod_token
+          namespaces: [supabase,gitlab]
+    - template: "stringdata-secret.yaml"
+      values:
+        - key: gitlab-username
+          value: admin
+          namespaces: [supabase,gitlab]
+        - key: gitlab-password
+          value: secretPassword!
+          namespaces: [supabase,gitlab]
+
+  # Test
+  - test:
+    - template: "data-secret.yaml"
+      values:
+        - key: gitlab-registry
+          value: test_token
+          namespaces: [supabase,gitlab]
+    - template: "stringdata-secret.yaml"
+      values:
+        - key: gitlab-username
+          value: admin
+          namespaces: [supabase,gitlab]
+        - key: gitlab-password
+          value: admin
+          namespaces: [supabase,gitlab]
+        - key: gitlab-password
+          value: notadminforgitlab
+          namespaces: [gitlab]

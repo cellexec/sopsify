@@ -1,0 +1,24 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# node_modules folder
+node_modules/
+
+# Optional npm cache directory
+.npm
+
+# Output of 'npm pack'
+*.tgz
+
+# VSCode settings folder
+.vscode/
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+
+# Lock files
+package-lock.json
