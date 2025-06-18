@@ -22,3 +22,6 @@ temp/
 
 # Lock files
 package-lock.json
+
+# Test files
+test/clusters/

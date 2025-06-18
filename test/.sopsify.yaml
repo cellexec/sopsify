@@ -30,7 +30,7 @@ sopsify:
           namespaces: [supabase,gitlab]
         - key: gitlab-password
           value: admin
-          namespaces: [supabase,gitlab]
+          namespaces: [supabase]
         - key: gitlab-password
           value: notadminforgitlab
           namespaces: [gitlab]
