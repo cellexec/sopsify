@@ -110,7 +110,7 @@ sopsify:
     namespaces: [backend]  # ✅ Valid to split
   ```
 
-* But you **cannot define it multiple times:
+* But you **cannot define it multiple times**:
 
   ```yaml
   - key: user-password
