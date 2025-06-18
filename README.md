@@ -1,6 +1,6 @@
 # sopsify
 
-> Encrypt Kubernetes Secret templates per cluster and namespace using [sops](https://github.com/mozilla/sops).
+Encrypt Kubernetes Secret templates per cluster and namespace using [sops](https://github.com/mozilla/sops).
 
 ---
 
@@ -20,7 +20,7 @@
 npm install -g sopsify
 ````
 
-> Make sure [sops](https://github.com/mozilla/sops) is installed and available in your `PATH`.
+> [!TIP] Make sure [sops](https://github.com/mozilla/sops) is installed and available in your `PATH`.
 
 ---
 
