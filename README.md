@@ -151,7 +151,12 @@ Encrypted secrets will be saved in:
 
 ## Error Handling & Warnings
 
-* Missing config files or templates abort execution
-* Duplicate namespaces or missing placeholder values cause errors
-* Warns about unused keys in `.sopsify.yaml`
+| Error   | Logs    |
+|--------------- | --------------- |
+| Missing Configs   | `❌ ENOENT: no such file or directory, open '.sops.yaml'`   |
+| | `❌ ENOENT: no such file or directory, open '.sopsify.yaml'`   |
+| Missing Template   | `⚠️ Template file not found for: com-certificate.yaml` |
+| Duplicate Namespaces   | Item2.3   |
+| Missing Placeholders   | Item2.4   |
+| Unused Keys   | Item2.4   |
 
