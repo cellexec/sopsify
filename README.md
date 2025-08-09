@@ -160,3 +160,18 @@ Encrypted secrets will be saved in:
 | Missing Placeholders   | Item2.4   |
 | Unused Keys   | Item2.4   |
 
+
+Yaml parse errors:
+
+```
+❌ bad indentation of a mapping entry (4:3)
+
+ 1 | sopsify:
+ 2 |
+ 3 |   # Homelab
+ 4 |   @- homelab:
+-------^
+ 5 |     - template: "certificates/towe ...
+ 6 |       values:
+
+```
