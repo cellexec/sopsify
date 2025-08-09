@@ -9,19 +9,19 @@ Encrypt Kubernetes Secret templates per cluster and namespace using [sops](https
 - Validates required config files: `.sops.yaml` & `.sopsify.yaml`
 - Loads Kubernetes Secret YAML templates with placeholders
 - Renders templates with namespace-specific values
-- Encrypts secrets in-place using `sops`
+- Encrypts secrets using `sops`
 - Organizes output by cluster and namespace folders
 
 ---
 
 ## Installation
 
-```bash
-npm install -g sopsify
-````
-
 > [!NOTE]
 > Make sure [sops](https://github.com/mozilla/sops) is installed and available in your `PATH`.
+
+```bash
+sudo npm link
+````
 
 ---
 
@@ -41,6 +41,9 @@ sopsify -t <templates-folder>
 * `.sopsify.yaml` — maps clusters, templates & namespace-specific values
 
 ### Example `.sopsify.yaml`
+
+> [!NOTE]
+> The `template` filename need to be organized in a folder that we later access with `sopsify -t <template_folder>`.
 
 ```yaml
 sopsify:
@@ -89,7 +92,7 @@ sopsify:
           namespaces: [frontend, backend]
 ```
 
-**Notes:**
+**Different Usage:**
 
 * You can **reuse the same value for multiple namespaces** by listing them together:
 
@@ -136,7 +139,12 @@ sopsify:
 Encrypted secrets will be saved in:
 
 ```
-clusters/<cluster-name>/secrets/<namespace>/<template>.enc.yaml
+  ─ clusters
+    └── <cluster-name>                  # Allow manage of multiple clusters
+        └── secrets
+            └── <namespace>             # Allow manage of multiple namespaces
+                └── <template>.enc.yaml # Allow manage of multiple templates
+
 ```
 
 ---
