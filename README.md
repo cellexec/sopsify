@@ -1,188 +1,92 @@
 # sopsify
 
-Encrypt Kubernetes Secret templates per cluster and namespace using [SOPS](https://github.com/getsops/sops).
+Render and encrypt Kubernetes Secrets per cluster and namespace — in one command.
 
-## Problem
-
-Managing encrypted secrets across multiple Kubernetes clusters and namespaces is tedious.
-The same secret template often needs different values per cluster (production vs staging)
-and must be placed in the right folder for each namespace — all encrypted with SOPS.
-Doing this manually means repeating the same steps for every cluster, namespace and template,
-which is error-prone and hard to maintain.
-
-## Solution
-
-Sopsify takes a single configuration file (`.sopsify.yaml`) that declares which template
-gets which values in which cluster and namespace. It renders the templates, encrypts them
-with SOPS, and writes the output to the correct folder structure — in one command.
+You define your secrets once in a `.sopsify.yaml`. Sopsify replaces placeholders
+in your templates with the right values, encrypts them with [SOPS](https://github.com/getsops/sops),
+and writes everything to the correct folder.
 
 ```
-.sopsify.yaml + templates/     →  sopsify  →  clusters/{name}/secrets/{ns}/*.enc.yaml
-(configuration)  (templates)       (CLI)       (encrypted secrets)
+sopsify -t secrets/
 ```
 
-## Features
-
-- Validates required config files: `.sops.yaml` and `.sopsify.yaml`
-- Loads Kubernetes Secret YAML templates with `${PLACEHOLDER}` syntax
-- Renders templates with namespace-specific values from configuration
-- Encrypts secrets using `sops`
-- Organizes output by cluster and namespace folders
-- Validates configuration before generating (duplicate detection, missing values, unused keys)
-
-## Installation
+## Quick start
 
 > [!NOTE]
-> Make sure [SOPS](https://github.com/getsops/sops) is installed and available in your `PATH`.
+> Requires [SOPS](https://github.com/getsops/sops) in your `PATH`.
 
 ```bash
 sudo npm link
 ```
 
-## Usage
+## How it works
 
-```bash
-sopsify -t <templates-folder>
-```
-
-- `-t, --templates <FOLDER>`: Folder containing your Secret YAML templates.
-
-The tool expects `.sops.yaml` and `.sopsify.yaml` in the current working directory.
-
-## Templates
-
-Templates must be Kubernetes Secrets (`kind: Secret`) with placeholders in `data` or `stringData` fields:
+**1. You write a Secret template** with `${...}` placeholders:
 
 ```yaml
+# secrets/app-secret.yaml
 apiVersion: v1
 kind: Secret
 metadata:
-  name: registry
+  name: app
 data:
-  registry: ${gitlab-registry}
-  url: "static_value"
+  token: ${api-token}
 ```
 
-All placeholders must have corresponding values for each namespace in `.sopsify.yaml`.
-
-## Configuration
-
-### .sops.yaml
-
-Standard SOPS configuration. Defines which fields to encrypt and which key to use:
-
-```yaml
-creation_rules:
-  - path_regex: '.*\.yaml$'
-    encrypted_regex: "^(data|stringData)$"
-    pgp: A71EBC32B9144B2C231F7887405D5C987B44047E
-```
-
-### .sopsify.yaml
-
-Maps clusters, templates and namespace-specific values:
-
-> [!NOTE]
-> The `template` filename must match a file in the folder passed via `sopsify -t <template_folder>`.
+**2. You define values per cluster and namespace** in `.sopsify.yaml`:
 
 ```yaml
 sopsify:
-
-  # Production cluster
   - production:
     - template: "app-secret.yaml"
       values:
         - key: api-token
-          value: prodApiToken123
-          namespaces: [frontend, backend]
-        - key: db-password
-          value: superSecurePass!
+          value: cHJvZF90b2tlbg==
           namespaces: [frontend, backend]
 
-  # Staging cluster
   - staging:
     - template: "app-secret.yaml"
       values:
         - key: api-token
-          value: stagingTokenXYZ
-          namespaces: [frontend, backend]
-        - key: db-password
-          value: stagingPass!
-          namespaces: [frontend, backend]
+          value: c3RhZ2luZ190b2tlbg==
+          namespaces: [frontend]
 ```
 
-### Value assignment rules
-
-You can **reuse the same value for multiple namespaces** by listing them together:
-
-```yaml
-- key: api-token
-  value: prodApiToken123
-  namespaces: [frontend, backend]   # same value for both
-```
-
-You can **use different values per namespace** by repeating the key with different namespaces:
-
-```yaml
-- key: user-password
-  value: adminPass
-  namespaces: [frontend]            # one value for frontend
-- key: user-password
-  value: backendOnlyPass
-  namespaces: [backend]             # different value for backend
-```
-
-But you **cannot define a key twice for the same namespace**:
-
-```yaml
-- key: user-password
-  value: adminPass
-  namespaces: [frontend, backend]
-- key: user-password
-  value: backendOnlyPass
-  namespaces: [backend]             # ERROR: backend already defined above
-```
-
-## Output structure
-
-Encrypted secrets are written to:
+**3. Sopsify generates encrypted files** in your cluster folder structure:
 
 ```
 clusters/
-  └── <cluster-name>/
-      └── secrets/
-          └── <namespace>/
-              └── <template>.enc.yaml
+  ├── production/secrets/
+  │   ├── frontend/app-secret.enc.yaml
+  │   └── backend/app-secret.enc.yaml
+  └── staging/secrets/
+      └── frontend/app-secret.enc.yaml
 ```
 
-## How it works
+Each file has the placeholders replaced, `metadata.namespace` set, and is encrypted with SOPS.
 
-1. **Pre-checks** — verifies `.sops.yaml`, `.sopsify.yaml` and the `sops` binary exist
-2. **Load templates** — reads all YAML files from the templates folder, validates they are `kind: Secret`
-3. **Per cluster and template:**
-   - Extracts all `${...}` placeholders from `data`/`stringData` fields
-   - Validates that every placeholder has a value for every namespace
-   - Per namespace: copies template, sets `metadata.namespace`, replaces placeholders
-   - Writes rendered file to `clusters/{cluster}/secrets/{namespace}/`
-   - Encrypts in-place via `sops -e -i`
-   - Renames to `.enc.yaml`
+## Value rules
 
-## Error handling
+Same value for multiple namespaces — list them together:
 
-| Scenario | Message |
-|----------|---------|
-| Missing config | `ENOENT: no such file or directory, open '.sops.yaml'` |
-| Missing template file | `Template file not found for: app-secret.yaml` |
-| Duplicate namespace for key | `Duplicate namespaces detected in key '...' for template '...'` |
-| Same key twice for namespace | `Duplicate value for key '...' in namespace '...'` |
-| Placeholder without value | `Placeholder 'api-token' in template '...' has no values defined` |
-| Namespace missing for placeholder | `Key 'db-password' in template '...' is missing namespaces: backend` |
-| Unused key in config | `Warning: key 'unused-key' is defined but not used in template '...'` |
-| SOPS not installed | `sops is not installed or not in PATH` |
-| Template not a Secret | `Error in 'file.yaml': Template is not of kind 'Secret'` |
-| Template missing data | `Template '...' must contain 'data' or 'stringData'` |
-| Cluster folder missing | `Cluster folder 'clusters/production' does not exist` |
-| YAML parse error | Shows exact location with marker |
+```yaml
+- key: token
+  value: abc
+  namespaces: [frontend, backend]
+```
+
+Different values per namespace — repeat the key:
+
+```yaml
+- key: token
+  value: abc
+  namespaces: [frontend]
+- key: token
+  value: xyz
+  namespaces: [backend]
+```
+
+A key cannot appear twice for the same namespace.
 
 ## License
 
